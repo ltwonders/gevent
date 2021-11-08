@@ -1,25 +1,29 @@
-### Features
+[gevent](https://github.com/ltwonders/gevent) imply go-event which tries to make event handling easier.
 
-1. gevent imply go-event,a simple async event handler package
-2. async executing and avoid too much go-routines
-3. support delayed execute simply
+### What does gevent want to do
+
+1. Async execute jobs safely without too many go routines.
+2. Support delayed events to execute.
+3. Support to config executing options
 
 ### Main usage scenarios:
 
-1. Side business separating from main workflow, like system log etc.
-2. Delayed event to check result except polling, like checking pay result status
-3. Decouple layer event without cycling call
-4. Notify downstream while domain event happening,like after pay finished etc.
+1. Separate side business from main, like system log which should be async.
+2. Use delayed event to confirm order status or pay status.
+3. Decouple domain events to avoid cycling call.
+4. Notify downstream while domain event happening.
 
 ### Attention
 
-1. Instant event may be delay although, pass definite time if need accurately handle time
-2. Local dispatcher does not persist events, use redis or rmq to persist
+1. Instant event may delay a few milliseconds while dispatching.
+2. Local events are not durable, use redis durable model for distribute systems.
 
 ### TODO
 
-1. support use rmq etc.
-2. benchmark
+1. Support use rmq etc.
+2. Benchmark
+
+### Any question or suggestion, please let me know.
 
 ### How to use：
 
@@ -38,26 +42,24 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis"
-	rclient "github.com/gomodule/redigo/redis"
+	"github.com/gomodule/redigo/redis"
 	"github.com/ltwonders/gevent"
-	"github.com/ltwonders/gevent/local"
-	"github.com/ltwonders/gevent/redis"
 )
 
 func main() {
 	ctx := context.Background()
-	localDispatcher := local.Init()
+	localDispatcher := gevent.LocalInit()
 	s, err0 := miniredis.Run()
 	if err0 != nil {
 		panic(err0)
 	}
 	defer s.Close()
 
-	pool := &rclient.Pool{
+	pool := &redis.Pool{
 		MaxIdle: 2,
-		Dial:    func() (rclient.Conn, error) { return rclient.Dial("tcp", s.Addr()) },
+		Dial:    func() (redis.Conn, error) { return redis.Dial("tcp", s.Addr()) },
 	}
-	redisDispatcher := redis.NewWithContext(ctx, &redis.ClientSimple{Pool: pool})
+	redisDispatcher := gevent.NewRedisWithContext(ctx, &gevent.ClientSimple{Pool: pool})
 
 	//annoy func to handle event
 	var annoyFunc = func(ctx context.Context, evt gevent.Event) error {
@@ -91,5 +93,3 @@ func main() {
 ```
 
 more examples, see example package
-
-### Any question or suggestion, please let me know.
