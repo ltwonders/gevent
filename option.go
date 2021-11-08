@@ -1,13 +1,28 @@
 package gevent
 
-import "time"
+import (
+	"log"
+	"time"
+)
 
-//OptionMaxQueued indicates how many events should be queued, especially valid for local dispatcher
+// Option option for different localDispatcher config
+type Option interface{}
+
+// Options parsed config for dispatchers
+type Options struct {
+	MaxQueuedEvents        int64
+	TickerInterval         time.Duration
+	ParallelThreshold      int
+	MaxRetry               int32
+	MaxTaskExecuteDuration time.Duration
+}
+
+//OptionMaxQueued indicates how many events should be queued, especially valid for local localDispatcher
 type OptionMaxQueued struct {
 	MaxQueued int64
 }
 
-//OptionTickerInterval indicates interval for dispatcher ticks
+//OptionTickerInterval indicates interval for localDispatcher ticks
 type OptionTickerInterval struct {
 	Interval time.Duration
 }
@@ -46,4 +61,24 @@ func WithMaxRetry(retry int32) Option {
 
 func WithTaskMaxDuration(d time.Duration) Option {
 	return OptionTaskMaxDuration{MaxDuration: d}
+}
+
+func parse(opts Options, options ...Option) Options {
+	for _, option := range options {
+		switch op := option.(type) {
+		case OptionMaxQueued:
+			opts.MaxQueuedEvents = op.MaxQueued
+		case OptionTickerInterval:
+			opts.TickerInterval = op.Interval
+		case OptionParallelRoutines:
+			opts.ParallelThreshold = op.Threshold
+		case OptionMaxRetry:
+			opts.MaxRetry = op.Retry
+		case OptionTaskMaxDuration:
+			opts.MaxTaskExecuteDuration = op.MaxDuration
+		default:
+			log.Printf("not support option type [%s] for local localDispatcher\n", op)
+		}
+	}
+	return opts
 }

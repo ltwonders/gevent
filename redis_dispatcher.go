@@ -1,4 +1,4 @@
-package redis
+package gevent
 
 import (
 	"context"
@@ -11,35 +11,35 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltwonders/gevent"
 	"go.uber.org/atomic"
 )
 
 const (
-	stateRunning  = 1 //dispatcher is running
-	stateStopped  = 2
-	stateHandling = 3 //ticker running for consuming
+	stateRedisRunning  = 1
+	stateRedisStopped  = 2
+	stateRedisHandling = 3
 )
 
-//dispatcher use redis to persist handlers, handlers are registered to the dispatcher which will ticker check latest handlers
-type dispatcher struct {
+//redisDispatcher use redis to persist handlers, handlers are registered to the redisDispatcher which will ticker check latest handlers
+type redisDispatcher struct {
 	clientWrapper *clientWrapper
-	handlers      map[gevent.Topic][]gevent.HandleFunc
+	handlers      map[Topic][]HandleFunc
 	state         *atomic.Int32
+	options       Options
 	sync.RWMutex
 }
 
 //Dispatch push an event to redis
-func (d *dispatcher) Dispatch(ctx context.Context, topic gevent.Topic, evt gevent.Event) error {
+func (d *redisDispatcher) Dispatch(ctx context.Context, topic Topic, evt Event) error {
 	if d.isStopped() {
-		return gevent.ErrDispatcherNotWorking
+		return ErrDispatcherNotWorking
 	}
 	//examine emit time
 	emitAt := time.Now()
-	if delayedEvt, ok := evt.(gevent.DelayedEvent); ok {
+	if delayedEvt, ok := evt.(DelayedEvent); ok {
 		emitAt = emitAt.Add(delayedEvt.Delayed())
 	}
-	emitEvt := &gevent.DispatchedEvent{Event: evt, EmitAt: emitAt}
+	emitEvt := &DispatchedEvent{Event: evt, EmitAt: emitAt}
 
 	//dispatch events should lock while handler change, concurrency dispatch is allowed
 	d.RLock()
@@ -48,16 +48,16 @@ func (d *dispatcher) Dispatch(ctx context.Context, topic gevent.Topic, evt geven
 }
 
 //Register add a handler to consume specific topic
-func (d *dispatcher) Register(ctx context.Context, topic gevent.Topic, handler gevent.HandleFunc) error {
+func (d *redisDispatcher) Register(ctx context.Context, topic Topic, handler HandleFunc) error {
 	if d.isStopped() {
-		return gevent.ErrDispatcherNotWorking
+		return ErrDispatcherNotWorking
 	}
 
 	d.Lock()
 	defer d.Unlock()
 
 	if _, ok := d.handlers[topic]; !ok {
-		d.handlers[topic] = []gevent.HandleFunc{}
+		d.handlers[topic] = []HandleFunc{}
 	}
 	for tpc, handlers := range d.handlers {
 		if tpc == topic {
@@ -67,8 +67,8 @@ func (d *dispatcher) Register(ctx context.Context, topic gevent.Topic, handler g
 	return nil
 }
 
-// Remove remove a handler of specific topic from dispatcher
-func (d *dispatcher) Remove(ctx context.Context, topic gevent.Topic, handler gevent.HandleFunc) bool {
+// Remove remove a handler of specific topic from redisDispatcher
+func (d *redisDispatcher) Remove(ctx context.Context, topic Topic, handler HandleFunc) bool {
 	if d.isStopped() {
 		return false
 	}
@@ -89,14 +89,14 @@ func (d *dispatcher) Remove(ctx context.Context, topic gevent.Topic, handler gev
 
 //emit start handling events of topic:
 // once ticker time will list [0,maxHandlingEvents] of topic, for each events will be handled by a go-routine
-func (d *dispatcher) emit(ctx context.Context, tpc gevent.Topic, handlers []gevent.HandleFunc, wg *sync.WaitGroup) {
+func (d *redisDispatcher) emit(ctx context.Context, tpc Topic, handlers []HandleFunc, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	if d.isStopped() || len(handlers) == 0 {
 		return
 	}
 
-	events, err := d.clientWrapper.ZRangeByScore(ctx, tpc, 0, maxHandlingEvents)
+	events, err := d.clientWrapper.ZRangeByScore(ctx, tpc, 0, d.options.ParallelThreshold)
 	if nil != err {
 		panic(fmt.Sprintf("get events from topic [%s] failed: %s", tpc, err))
 	}
@@ -115,7 +115,7 @@ func (d *dispatcher) emit(ctx context.Context, tpc gevent.Topic, handlers []geve
 }
 
 //handle events for a topic, will panic if max retry have reached
-func (d *dispatcher) handle(ctx context.Context, tpc gevent.Topic, evt *gevent.DispatchedEvent, wg *sync.WaitGroup) bool {
+func (d *redisDispatcher) handle(ctx context.Context, tpc Topic, evt *DispatchedEvent, wg *sync.WaitGroup) bool {
 	defer wg.Done()
 	handlers := d.handlers[tpc]
 	//if the low score does not need handle, skip all the events until next ticker
@@ -126,7 +126,7 @@ func (d *dispatcher) handle(ctx context.Context, tpc gevent.Topic, evt *gevent.D
 	//lock if there is a handler is handling
 	lockKey := fmt.Sprintf("%s:%s:%s", tpc, "handling", fmt.Sprintf("%x", md5.Sum([]byte(evt.JsonStable()))))
 	lockValue := strconv.FormatInt(rand.Int63(), 10)
-	if !d.clientWrapper.DLock(ctx, lockKey, lockValue, maxTaskExecuteDuration) {
+	if !d.clientWrapper.DLock(ctx, lockKey, lockValue, d.options.MaxTaskExecuteDuration) {
 		return false
 	}
 	defer d.clientWrapper.DUnlock(ctx, lockKey, lockValue)
@@ -147,7 +147,7 @@ func (d *dispatcher) handle(ctx context.Context, tpc gevent.Topic, evt *gevent.D
 	}
 	if !handled {
 		//put event back to retry if lower than max retry, !!!may be have concurrency problem
-		if evt.Retry < maxRetry {
+		if evt.Retry < d.options.MaxRetry {
 			evt.Retry = evt.Retry + 1
 			if err3 := d.clientWrapper.ZAdd(ctx, tpc, evt); nil != err3 {
 				panic(fmt.Sprintf("event [%v] handle failed after max retry: %s", evt, err3))
@@ -159,29 +159,29 @@ func (d *dispatcher) handle(ctx context.Context, tpc gevent.Topic, evt *gevent.D
 }
 
 //start ticker running go-routine to check events, check if
-func (d *dispatcher) start(ctx context.Context) {
-	ticker := time.NewTicker(tickerInterval)
-	d.state = atomic.NewInt32(stateRunning)
+func (d *redisDispatcher) start(ctx context.Context) {
+	ticker := time.NewTicker(d.options.TickerInterval)
+	d.state = atomic.NewInt32(stateRedisRunning)
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				if d.isStopped() {
-					//if dispatcher has been stopped, shut down go-routine
+					//if redisDispatcher has been stopped, shut down go-routine
 					return
 				}
 				if d.isHandling() || len(d.handlers) == 0 {
 					//if ticker is still handling or no handlers, break select
 					break
 				}
-				d.state.Store(stateHandling)
+				d.state.Store(stateRedisHandling)
 				wg := &sync.WaitGroup{}
 				wg.Add(len(d.handlers))
 				for tpc, handlers := range d.handlers {
 					go d.emit(ctx, tpc, handlers, wg)
 				}
 				wg.Wait()
-				d.state.Store(stateRunning)
+				d.state.Store(stateRedisRunning)
 			case <-ctx.Done():
 				log.Printf("context done")
 				return
@@ -190,34 +190,45 @@ func (d *dispatcher) start(ctx context.Context) {
 	}()
 }
 
-// Stop terminate the redis dispatcher
-func (d *dispatcher) Stop(ctx context.Context) {
-	d.state.Store(stateStopped)
+// Stop terminate the redis redisDispatcher
+func (d *redisDispatcher) Stop(ctx context.Context) {
+	d.state.Store(stateRedisStopped)
 }
 
-func (d *dispatcher) isStopped() bool {
-	return d.state.Load() == stateStopped
+func (d *redisDispatcher) isStopped() bool {
+	return d.state.Load() == stateRedisStopped
 }
 
-func (d *dispatcher) isHandling() bool {
-	return d.state.Load() == stateHandling
+func (d *redisDispatcher) isHandling() bool {
+	return d.state.Load() == stateRedisHandling
 }
 
-//New create a new redis dispatcher
-func New(client Client, opts ...gevent.Option) gevent.Dispatcher {
-	return NewWithContext(context.Background(), client, opts...)
+//NewRedis create a new redis redisDispatcher
+func NewRedis(client RedisClient, opts ...Option) Dispatcher {
+	return NewRedisWithContext(context.Background(), client, opts...)
 }
 
-//NewWithContext create a redis dispatcher that relates to ctx, if ctx is cancelled, dispatcher will stop
-func NewWithContext(ctx context.Context, client Client, opts ...gevent.Option) gevent.Dispatcher {
+//NewRedisWithContext create a redis redisDispatcher that relates to ctx, if ctx is cancelled, redisDispatcher will stop
+func NewRedisWithContext(ctx context.Context, client RedisClient, opts ...Option) Dispatcher {
 	if nil == client {
 		panic("no client specified")
 	}
-	parse(opts...)
-	inst := &dispatcher{
-		handlers:      map[gevent.Topic][]gevent.HandleFunc{},
+	options := parse(defaultRedisOptions(), opts...)
+	inst := &redisDispatcher{
+		handlers:      map[Topic][]HandleFunc{},
 		clientWrapper: &clientWrapper{client: client},
+		options:       options,
 	}
 	inst.start(ctx)
 	return inst
+}
+
+func defaultRedisOptions() Options {
+	return Options{
+		MaxQueuedEvents:        int64(2000),
+		TickerInterval:         1 * time.Second, // polling check events of topic
+		ParallelThreshold:      40,              // go-routine threshold for each topic
+		MaxRetry:               int32(3),        // max retry count
+		MaxTaskExecuteDuration: 50 * time.Second,
+	}
 }

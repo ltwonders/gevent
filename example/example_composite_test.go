@@ -9,13 +9,11 @@ import (
 	"github.com/alicebob/miniredis"
 	rclient "github.com/gomodule/redigo/redis"
 	"github.com/ltwonders/gevent"
-	"github.com/ltwonders/gevent/local"
-	"github.com/ltwonders/gevent/redis"
 )
 
 func Test_Example_Composite(t *testing.T) {
 	ctx := context.Background()
-	localDispatcher := local.Init()
+	localDispatcher := gevent.LocalInit()
 	s, err0 := miniredis.Run()
 	if err0 != nil {
 		panic(err0)
@@ -26,7 +24,7 @@ func Test_Example_Composite(t *testing.T) {
 		MaxIdle: 2,
 		Dial:    func() (rclient.Conn, error) { return rclient.Dial("tcp", s.Addr()) },
 	}
-	redisDispatcher := redis.NewWithContext(ctx, &redis.ClientSimple{Pool: pool})
+	redisDispatcher := gevent.NewRedisWithContext(ctx, &gevent.ClientSimple{Pool: pool})
 
 	if err1 := localDispatcher.Register(ctx, delayedTopic, annoyFunc); nil != err1 {
 		log.Printf("fail to register local handler")

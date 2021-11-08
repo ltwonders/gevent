@@ -1,18 +1,16 @@
-package local
+package gevent
 
 import (
 	"container/heap"
 	"context"
 	"reflect"
 	"sync"
-
-	"github.com/ltwonders/gevent"
 )
 
 //localEvents each topic owns one
 type localEvents struct {
-	handlers []gevent.HandleFunc
-	heap     *gevent.DispatchedHeap
+	handlers []HandleFunc
+	heap     *DispatchedHeap
 	parallel chan bool
 	sync.Mutex
 }
@@ -23,17 +21,17 @@ func newEvents(parallel int) *localEvents {
 	}
 }
 
-func (e *localEvents) AddHandleFunc(ctx context.Context, handler gevent.HandleFunc) error {
+func (e *localEvents) AddHandleFunc(ctx context.Context, handler HandleFunc) error {
 	e.Lock()
 	defer e.Unlock()
 	if nil == handler {
-		return gevent.ErrNoHandlerFound
+		return ErrNoHandlerFound
 	}
 	e.handlers = append(e.handlers, handler)
 	return nil
 }
 
-func (e *localEvents) RemoveHandleFunc(ctx context.Context, handler gevent.HandleFunc) bool {
+func (e *localEvents) RemoveHandleFunc(ctx context.Context, handler HandleFunc) bool {
 	e.Lock()
 	defer e.Unlock()
 	for i, h := range e.handlers {
@@ -45,25 +43,25 @@ func (e *localEvents) RemoveHandleFunc(ctx context.Context, handler gevent.Handl
 	return false
 }
 
-func (e *localEvents) PushEvent(ctx context.Context, evt *gevent.DispatchedEvent) {
+func (e *localEvents) PushEvent(ctx context.Context, evt *DispatchedEvent) {
 	if nil == evt {
 		return
 	}
 	e.Lock()
 	defer e.Unlock()
 	if nil == e.heap {
-		e.heap = &gevent.DispatchedHeap{}
+		e.heap = &DispatchedHeap{}
 	}
 	heap.Push(e.heap, evt)
 }
 
-func (e *localEvents) PopEvent(ctx context.Context) *gevent.DispatchedEvent {
+func (e *localEvents) PopEvent(ctx context.Context) *DispatchedEvent {
 	e.Lock()
 	defer e.Unlock()
 	if nil == e.heap || e.heap.Len() == 0 {
 		return nil
 	}
-	if ee, ok := heap.Pop(e.heap).(*gevent.DispatchedEvent); ok {
+	if ee, ok := heap.Pop(e.heap).(*DispatchedEvent); ok {
 		return ee
 	}
 	return nil

@@ -1,4 +1,4 @@
-package local
+package gevent
 
 import (
 	"context"
@@ -7,53 +7,53 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltwonders/gevent"
 	"go.uber.org/atomic"
 )
 
 const (
-	stateRunning  = 1
-	stateStopped  = 2
-	stateHandling = 3
+	stateLocalRunning  = 1
+	stateLocalStopped  = 2
+	stateLocalHandling = 3
 )
 
-//dispatcher local dispatcher, support multi topic and each topic with multi handlers
-type dispatcher struct {
-	events  map[gevent.Topic]*localEvents
+//localDispatcher local localDispatcher, support multi topic and each topic with multi handlers
+type localDispatcher struct {
+	events  map[Topic]*localEvents
 	total   *atomic.Int64
 	state   *atomic.Int32
 	changed chan *localEvents
+	options Options
 }
 
 var (
-	localInst *dispatcher
+	localInst *localDispatcher
 	localOnce sync.Once
 )
 
 // Dispatch dispatch a event to specific topic, there may be time duration between executing and dispatching
-func (d *dispatcher) Dispatch(ctx context.Context, topic gevent.Topic, evt gevent.Event) error {
+func (d *localDispatcher) Dispatch(ctx context.Context, topic Topic, evt Event) error {
 	if d.isStopped() {
-		return gevent.ErrDispatcherNotWorking
+		return ErrDispatcherNotWorking
 	}
 
 	//check max queued size
-	if d.total.Load() >= maxQueuedEvents {
-		return gevent.ErrMaxQueuedEventsReached
+	if d.total.Load() >= d.options.MaxQueuedEvents {
+		return ErrMaxQueuedEventsReached
 	}
 
-	//local dispatcher should register handlers first
+	//local localDispatcher should register handlers first
 	events := d.events[topic]
 	if nil == events || len(events.handlers) == 0 {
-		return gevent.ErrNoHandlerFound
+		return ErrNoHandlerFound
 	}
 
 	//add emit time
 	emitAt := time.Now()
-	if delayedEvt, ok := evt.(gevent.DelayedEvent); ok {
+	if delayedEvt, ok := evt.(DelayedEvent); ok {
 		emitAt = emitAt.Add(delayedEvt.Delayed())
 	}
 
-	events.PushEvent(ctx, &gevent.DispatchedEvent{Event: evt, EmitAt: emitAt})
+	events.PushEvent(ctx, &DispatchedEvent{Event: evt, EmitAt: emitAt})
 
 	d.total.Inc()
 
@@ -63,18 +63,18 @@ func (d *dispatcher) Dispatch(ctx context.Context, topic gevent.Topic, evt geven
 }
 
 //Register add a handler func to specific topic
-func (d *dispatcher) Register(ctx context.Context, topic gevent.Topic, handler gevent.HandleFunc) error {
+func (d *localDispatcher) Register(ctx context.Context, topic Topic, handler HandleFunc) error {
 	if d.isStopped() {
-		return gevent.ErrDispatcherNotWorking
+		return ErrDispatcherNotWorking
 	}
 	if nil == d.events[topic] {
-		d.events[topic] = newEvents(parallelThreshold)
+		d.events[topic] = newEvents(d.options.ParallelThreshold)
 	}
 	events := d.events[topic]
 	return events.AddHandleFunc(ctx, handler)
 }
 
-func (d *dispatcher) Remove(ctx context.Context, topic gevent.Topic, handler gevent.HandleFunc) bool {
+func (d *localDispatcher) Remove(ctx context.Context, topic Topic, handler HandleFunc) bool {
 	if d.isStopped() {
 		return false
 	}
@@ -85,14 +85,14 @@ func (d *dispatcher) Remove(ctx context.Context, topic gevent.Topic, handler gev
 	return events.RemoveHandleFunc(ctx, handler)
 }
 
-func (d *dispatcher) Stop(ctx context.Context) {
-	d.state.Swap(stateStopped)
-	log.Println("local dispatcher stopped")
+func (d *localDispatcher) Stop(ctx context.Context) {
+	d.state.Swap(stateLocalStopped)
+	log.Println("local localDispatcher stopped")
 }
 
 //emit Start consuming events of a topic, go-routines count will be restricted with parallelThreshold
 // Ends until no event can emit by current time
-func (d *dispatcher) emit(ctx context.Context, events *localEvents, wg *sync.WaitGroup) {
+func (d *localDispatcher) emit(ctx context.Context, events *localEvents, wg *sync.WaitGroup) {
 	if nil != wg {
 		defer wg.Done()
 	}
@@ -109,7 +109,7 @@ func (d *dispatcher) emit(ctx context.Context, events *localEvents, wg *sync.Wai
 			return
 		}
 		//start consume with go-routines
-		go func(de *gevent.DispatchedEvent) {
+		go func(de *DispatchedEvent) {
 			events.parallel <- true
 			defer func() {
 				<-events.parallel
@@ -117,7 +117,7 @@ func (d *dispatcher) emit(ctx context.Context, events *localEvents, wg *sync.Wai
 			handled := d.handle(ctx, de, events.handlers)
 			// return the heap if max retry not reached
 			if !handled {
-				if de.Retry < maxRetry {
+				if de.Retry < d.options.MaxRetry {
 					de.Retry = atomic.NewInt32(de.Retry).Inc()
 					events.PushEvent(ctx, de)
 					return
@@ -131,7 +131,7 @@ func (d *dispatcher) emit(ctx context.Context, events *localEvents, wg *sync.Wai
 	}
 }
 
-func (d *dispatcher) handle(ctx context.Context, e *gevent.DispatchedEvent, handlers []gevent.HandleFunc) bool {
+func (d *localDispatcher) handle(ctx context.Context, e *DispatchedEvent, handlers []HandleFunc) bool {
 	if d.isStopped() || nil == e || len(handlers) == 0 {
 		return false
 	}
@@ -147,27 +147,27 @@ func (d *dispatcher) handle(ctx context.Context, e *gevent.DispatchedEvent, hand
 	return handled
 }
 
-func (d *dispatcher) isStopped() bool {
-	return d.state.Load() == stateStopped
+func (d *localDispatcher) isStopped() bool {
+	return d.state.Load() == stateLocalStopped
 }
 
 //start initialize a forever-run go-routine ticker to check topics with events,
 //ticker depends on the option of tickerInterval
-func (d *dispatcher) start(ctx context.Context) {
-	ticker := time.NewTicker(tickerInterval)
-	d.state.Swap(stateRunning)
+func (d *localDispatcher) start(ctx context.Context) {
+	ticker := time.NewTicker(d.options.TickerInterval)
+	d.state.Swap(stateLocalRunning)
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				if d.state.Load() == stateStopped {
+				if d.state.Load() == stateLocalStopped {
 					return
 				}
-				if d.state.Load() == stateHandling {
+				if d.state.Load() == stateLocalHandling {
 					//if ticker is still handling, break select
 					break
 				}
-				d.state.Store(stateHandling)
+				d.state.Store(stateLocalHandling)
 				//polling the events with interval
 				wg := &sync.WaitGroup{}
 				wg.Add(len(d.events))
@@ -175,48 +175,58 @@ func (d *dispatcher) start(ctx context.Context) {
 					go d.emit(ctx, events, wg)
 				}
 				wg.Wait()
-				d.state.Store(stateRunning)
+				d.state.Store(stateLocalRunning)
 			case events := <-d.changed:
 				//new event dispatch
 				d.emit(ctx, events, nil)
 			case <-ctx.Done():
-				log.Println("local dispatcher context done")
+				log.Println("local localDispatcher context done")
 				return
 			}
 		}
 	}()
 }
 
-//Init create local dispatcher as need, init will default options if no options pass
-func Init(options ...gevent.Option) *dispatcher {
+//LocalInit create local localDispatcher as need, init will default options if no options pass
+func LocalInit(options ...Option) *localDispatcher {
 	localOnce.Do(func() {
-		doInit(options...)
+		localDoInit(options...)
 	})
 	return localInst
 }
 
-func doInit(options ...gevent.Option) {
+func localDoInit(options ...Option) {
 	if nil != localInst {
-		panic(gevent.ErrDuplicateInitialized)
+		panic(ErrDuplicateInitialized)
 	}
-	parse(options...)
+	opts := parse(defaultLocalOptions(), options...)
 
-	localInst = &dispatcher{
-		events:  map[gevent.Topic]*localEvents{},
+	localInst = &localDispatcher{
+		events:  map[Topic]*localEvents{},
 		total:   atomic.NewInt64(0),
-		state:   atomic.NewInt32(stateStopped),
+		state:   atomic.NewInt32(stateLocalStopped),
 		changed: make(chan *localEvents),
+		options: opts,
 	}
 	localInst.start(context.Background())
 }
 
-func Dispatcher() *dispatcher {
+func defaultLocalOptions() Options {
+	return Options{
+		MaxQueuedEvents:   int64(2000),
+		TickerInterval:    1 * time.Second, // polling check events of topic
+		ParallelThreshold: 200,             // go-routine threshold for each topic
+		MaxRetry:          int32(3),        // max retry count
+	}
+}
+
+func Local() *localDispatcher {
 	if nil == localInst {
-		panic("local dispatcher not initialized")
+		panic("local localDispatcher not initialized")
 	}
 	return localInst
 }
 
-func Dispatch(ctx context.Context, tpc gevent.Topic, evt gevent.Event) error {
-	return Dispatcher().Dispatch(ctx, tpc, evt)
+func DispatchLocal(ctx context.Context, tpc Topic, evt Event) error {
+	return Local().Dispatch(ctx, tpc, evt)
 }

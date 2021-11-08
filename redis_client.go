@@ -1,4 +1,4 @@
-package redis
+package gevent
 
 import (
 	"context"
@@ -12,12 +12,11 @@ import (
 	"time"
 
 	"github.com/gomodule/redigo/redis"
-	"github.com/ltwonders/gevent"
 )
 
-// Client Redis clientWrapper to add\rem\range events,
+// RedisClient Redis clientWrapper to add\rem\range events,
 // better to also implements gevent.DistributeLocker to control event handling and event removing
-type Client interface {
+type RedisClient interface {
 	//ZAdd add event to a sorted set, the score should be the time that event will emit
 	ZAdd(ctx context.Context, key string, score float64, evt interface{}) error
 	//ZRem remove event from a sorted set, better to use evt and score to avoid remove the wrong event
@@ -28,18 +27,18 @@ type Client interface {
 
 //clientWrapper client clientWrapper to generally and better handing events,which will accept events instance and lock
 type clientWrapper struct {
-	client Client
+	client RedisClient
 	sync.RWMutex
 }
 
-func (w *clientWrapper) ZAdd(ctx context.Context, tpc gevent.Topic, evt *gevent.DispatchedEvent) error {
+func (w *clientWrapper) ZAdd(ctx context.Context, tpc Topic, evt *DispatchedEvent) error {
 	w.Lock()
 	defer w.Unlock()
 
 	return w.client.ZAdd(ctx, tpc.String(), float64(evt.EmitAt.UnixNano()), evt.JsonStable())
 }
 
-func (w *clientWrapper) ZRem(ctx context.Context, tpc gevent.Topic, evt *gevent.DispatchedEvent) error {
+func (w *clientWrapper) ZRem(ctx context.Context, tpc Topic, evt *DispatchedEvent) error {
 	w.Lock()
 	defer w.Unlock()
 
@@ -47,7 +46,7 @@ func (w *clientWrapper) ZRem(ctx context.Context, tpc gevent.Topic, evt *gevent.
 	key := fmt.Sprintf("%s:%s:%s", tpc, "removing", h)
 	value := strconv.FormatInt(rand.Int63(), 10)
 	if !w.DLock(ctx, key, value, 100*time.Millisecond) {
-		return gevent.ErrConcurrentModificationEvent
+		return ErrConcurrentModificationEvent
 	}
 	defer w.DUnlock(ctx, key, value)
 
@@ -55,16 +54,16 @@ func (w *clientWrapper) ZRem(ctx context.Context, tpc gevent.Topic, evt *gevent.
 }
 
 //ZRangeByScore list events
-func (w *clientWrapper) ZRangeByScore(ctx context.Context, tpc gevent.Topic, start, stop int) ([]*gevent.DispatchedEvent, error) {
+func (w *clientWrapper) ZRangeByScore(ctx context.Context, tpc Topic, start, stop int) ([]*DispatchedEvent, error) {
 	w.Lock()
 	defer w.Unlock()
-	var events []*gevent.DispatchedEvent
+	var events []*DispatchedEvent
 	raws, err := w.client.ZRangeByScore(ctx, tpc.String(), float64(time.Now().UnixNano()), start, stop)
 	if nil != err {
 		return events, err
 	}
 	for _, raw := range raws {
-		evt := &gevent.DispatchedEvent{}
+		evt := &DispatchedEvent{}
 		if err0 := json.Unmarshal([]byte(raw), evt); nil != err0 {
 			log.Printf("unmarshal event [%s] failed : %s", raw, err0)
 			continue
@@ -77,7 +76,7 @@ func (w *clientWrapper) ZRangeByScore(ctx context.Context, tpc gevent.Topic, sta
 //DLock use distribute lock, always return true if client does not implement gevent.DistributeLocker
 func (w *clientWrapper) DLock(ctx context.Context, key, value string, expire time.Duration) bool {
 	//check client have implement locker interface or not
-	if locker, ok := w.client.(gevent.DistributeLocker); ok {
+	if locker, ok := w.client.(DistributeLocker); ok {
 		return locker.DLock(ctx, key, value, expire)
 	}
 	return true
@@ -86,7 +85,7 @@ func (w *clientWrapper) DLock(ctx context.Context, key, value string, expire tim
 //DUnlock remove distribute lock, always return true if client does not implement gevent.DistributeLocker
 func (w *clientWrapper) DUnlock(ctx context.Context, key, value string) bool {
 	//check client have implement locker interface or not
-	if locker, ok := w.client.(gevent.DistributeLocker); ok {
+	if locker, ok := w.client.(DistributeLocker); ok {
 		return locker.DUnlock(ctx, key, value)
 	}
 	return true

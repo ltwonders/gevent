@@ -9,7 +9,6 @@ import (
 	"github.com/alicebob/miniredis"
 	"github.com/gomodule/redigo/redis"
 	"github.com/ltwonders/gevent"
-	gedis "github.com/ltwonders/gevent/redis"
 )
 
 func Test_Example_Redis(t *testing.T) {
@@ -24,7 +23,7 @@ func Test_Example_Redis(t *testing.T) {
 		MaxIdle: 2,
 		Dial:    func() (redis.Conn, error) { return redis.Dial("tcp", s.Addr()) },
 	}
-	holder := gedis.New(&gedis.ClientSimple{Pool: pool}, gevent.WithParallelThreshold(10))
+	holder := gevent.NewRedis(&gevent.ClientSimple{Pool: pool}, gevent.WithParallelThreshold(10))
 
 	type instantEvent struct {
 		ID int `json:"id"`

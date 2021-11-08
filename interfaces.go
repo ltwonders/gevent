@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-// Option option for different dispatcher config
-type Option interface{}
-
 // Event indicate a event to dispatch, should marked with json marshall tag and be idempotent handling
 type Event interface{}
 
@@ -25,7 +22,7 @@ type DelayedEvent interface {
 }
 
 // Handler interface to handle a event, strut can implement this
-// need convert to func use ToHandleFunc() while registering to a dispatcher
+// need convert to func use ToHandleFunc() while registering to a localDispatcher
 type Handler interface {
 	Handle(ctx context.Context, evt Event) error
 }
@@ -52,7 +49,7 @@ type Dispatcher interface {
 	// Remove remove a handle func
 	Remove(ctx context.Context, tpc Topic, handler HandleFunc) bool
 
-	// Stop stop dispatcher
+	// Stop stop localDispatcher
 	Stop(ctx context.Context)
 }
 
@@ -69,18 +66,20 @@ type DistributeLocker interface {
 
 //Dispatch dispatch a event to a topic, support multi dispatchers to receive events
 //should keep idempotent for event handling
-func Dispatch(ctx context.Context, topic Topic, evt Event, dispatchers ...Dispatcher) error {
+func Dispatch(ctx context.Context, topic Topic, evt Event, dispatcher Dispatcher, dispatchers ...Dispatcher) error {
 	if "" == topic.String() {
 		return ErrNoTopicSpecified
 	}
 	if nil == evt {
 		return ErrNoEventSpecified
 	}
-	if len(dispatchers) == 0 {
+	if nil == dispatcher {
 		return ErrNoDispatcherSpecified
 	}
-	for _, dispatcher := range dispatchers {
-		if err := dispatcher.Dispatch(ctx, topic, evt); nil != err {
+
+	allDispatchers := append(dispatchers, dispatcher)
+	for _, disp := range allDispatchers {
+		if err := disp.Dispatch(ctx, topic, evt); nil != err {
 			return err
 		}
 	}
