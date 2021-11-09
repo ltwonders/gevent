@@ -188,11 +188,10 @@ func (d *localDispatcher) start(ctx context.Context) {
 }
 
 //LocalInit create local localDispatcher as need, init will default options if no options pass
-func LocalInit(options ...Option) *localDispatcher {
+func LocalInit(options ...Option) {
 	localOnce.Do(func() {
 		localDoInit(options...)
 	})
-	return localInst
 }
 
 func localDoInit(options ...Option) {

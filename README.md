@@ -48,7 +48,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	localDispatcher := gevent.LocalInit()
+	gevent.LocalInit()
 	s, err0 := miniredis.Run()
 	if err0 != nil {
 		panic(err0)
@@ -68,7 +68,7 @@ func main() {
 		log.Printf("instant event [%+v] finish at %+v", evt, time.Now().Second())
 		return nil
 	}
-	if err1 := localDispatcher.Register(ctx, "instant", annoyFunc); nil != err1 {
+	if err1 := gevent.Local().Register(ctx, "instant", annoyFunc); nil != err1 {
 		log.Printf("fail to register local handler")
 	}
 
@@ -79,7 +79,7 @@ func main() {
 	// dispatch events
 	for i := 1; i <= 100; i++ {
 		inst := &instantEvent{ID: i}
-		if err := gevent.Dispatch(ctx, "instant", inst, localDispatcher, redisDispatcher); nil != err {
+		if err := gevent.Dispatch(ctx, "instant", inst, gevent.Local(), redisDispatcher); nil != err {
 			log.Printf("dispatch failed: %s", err)
 		}
 	}
