@@ -10,3 +10,5 @@ require (
 	go.uber.org/atomic v1.9.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
+
+replace gopkg.in/yaml.v2 => gopkg.in/yaml.v2 v2.4.0
